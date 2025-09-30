@@ -17,14 +17,7 @@ const jwtClient = new google.auth.JWT(
 
 const calendar = google.calendar({ version: 'v3', auth: jwtClient });
 
-/**
- * Sanitizes a string to be a valid Google Calendar event ID
- */
-function sanitizeEventId(id: string): string {
-  return id
-    .trim()
-    .replace(/[^\w-]/g, '_'); // replace invalid characters with underscore
-}
+export default calendar;
 
 /**
  * Upsert booking into Google Calendar (all-day, check-in only)
@@ -35,48 +28,61 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
     return;
   }
 
-  const endDate = new Date(booking.checkinDate);
+  const firstName = booking.guestFirstName?.trim() || '';
+  const lastName = booking.guestLastName?.trim() || '';
+
+  const startDate = new Date(booking.checkinDate);
+  const endDate = new Date(startDate);
   endDate.setDate(endDate.getDate() + 1);
 
   const event = {
-    id: sanitizeEventId(booking.id),
     summary: `Booking: ${unit.name}`,
-    description: `Booked by ${booking.guestFirstName || ''} ${booking.guestLastName || ''}`,
-    start: { date: booking.checkinDate },
+    description: `Booked by ${firstName} ${lastName}`.trim(),
+    start: { date: startDate.toISOString().split('T')[0] },
     end: { date: endDate.toISOString().split('T')[0] },
     colorId: unit.colorId || '1',
   };
 
   try {
-    await calendar.events.update({
-      calendarId: process.env.GOOGLE_CALENDAR_ID!,
-      eventId: event.id,
-      requestBody: event,
-    });
-    console.log(`✅ Updated booking ${booking.id}`);
-  } catch (err: any) {
-    if (err.code === 404) {
-      await calendar.events.insert({
+    if (booking.googleCalendarEventId) {
+      // Try updating existing event
+      await calendar.events.update({
+        calendarId: process.env.GOOGLE_CALENDAR_ID!,
+        eventId: booking.googleCalendarEventId,
+        requestBody: event,
+      });
+      console.log(`✅ Updated booking ${booking.id}`);
+    } else {
+      // Insert new event
+      const inserted = await calendar.events.insert({
         calendarId: process.env.GOOGLE_CALENDAR_ID!,
         requestBody: event,
       });
       console.log(`➕ Inserted booking ${booking.id}`);
-    } else {
-      console.error(`❌ Failed to sync booking ${booking.id}`, err);
+
+      // Save the generated Google Calendar event ID back to your booking
+      booking.googleCalendarEventId = inserted.data.id;
+      // If using Firestore, save it:
+      // await db.collection('bookings').doc(booking.id).update({ googleCalendarEventId: inserted.data.id });
     }
+  } catch (err: any) {
+    console.error(`❌ Failed to sync booking ${booking.id}`, err);
   }
 }
 
 /**
  * Delete booking from Google Calendar
  */
-export async function deleteBookingFromCalendar(bookingId: string) {
-  const eventId = sanitizeEventId(bookingId);
+export async function deleteBookingFromCalendar(bookingId: string, googleEventId?: string) {
+  if (!googleEventId) {
+    console.log(`⚠️ Booking ${bookingId} has no Google Calendar event ID`);
+    return;
+  }
 
   try {
     await calendar.events.delete({
       calendarId: process.env.GOOGLE_CALENDAR_ID!,
-      eventId,
+      eventId: googleEventId,
     });
     console.log(`🗑️ Deleted booking ${bookingId}`);
   } catch (err: any) {
@@ -87,5 +93,3 @@ export async function deleteBookingFromCalendar(bookingId: string) {
     }
   }
 }
-
-export default calendar;
