@@ -1,4 +1,4 @@
-import { db } from './firebase';
+import { db } from '../lib/firebase';
 import calendar, { upsertBookingToCalendar, deleteBookingFromCalendar } from './google-calendar';
 
 /**
