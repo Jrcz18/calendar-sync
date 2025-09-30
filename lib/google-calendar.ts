@@ -1,12 +1,32 @@
+// lib/google-calendar.ts
 import { google } from 'googleapis';
 
-export async function getCalendarClient() {
-  const auth = new google.auth.GoogleAuth({
-    credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY!),
-    scopes: ['https://www.googleapis.com/auth/calendar'],
-  });
+const serviceAccount = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY!);
 
-  const client = await auth.getClient();
-  return google.calendar({ version: 'v3', auth: client });
+const jwtClient = new google.auth.JWT(
+  serviceAccount.client_email,
+  undefined,
+  serviceAccount.private_key,
+  ['https://www.googleapis.com/auth/calendar']
+);
+
+const calendar = google.calendar({ version: 'v3', auth: jwtClient });
+
+interface BookingEvent {
+  id: string;
+  title: string;
+  start: string;
+  end: string;
 }
 
+export async function insertBookingToCalendar(calendarId: string, booking: BookingEvent) {
+  await calendar.events.insert({
+    calendarId,
+    requestBody: {
+      id: booking.id, // Google Calendar deduplication
+      summary: booking.title,
+      start: { dateTime: booking.start },
+      end: { dateTime: booking.end },
+    },
+  });
+}
