@@ -19,9 +19,9 @@ interface BookingEvent {
   end: string;
 }
 
+// Insert or Update
 export async function upsertBookingToCalendar(calendarId: string, booking: BookingEvent) {
   try {
-    // Try to update first
     await calendar.events.update({
       calendarId,
       eventId: booking.id,
@@ -31,20 +31,36 @@ export async function upsertBookingToCalendar(calendarId: string, booking: Booki
         end: { dateTime: booking.end },
       },
     });
-    console.log(`Updated booking ${booking.id} in calendar ${calendarId}`);
+    console.log(`✅ Updated booking ${booking.id} in calendar ${calendarId}`);
   } catch (err: any) {
-    // If not found, insert instead
     if (err.code === 404) {
       await calendar.events.insert({
         calendarId,
         requestBody: {
-          id: booking.id, // ensures deduplication
+          id: booking.id,
           summary: booking.title,
           start: { dateTime: booking.start },
           end: { dateTime: booking.end },
         },
       });
-      console.log(`Inserted booking ${booking.id} into calendar ${calendarId}`);
+      console.log(`➕ Inserted booking ${booking.id} into calendar ${calendarId}`);
+    } else {
+      throw err;
+    }
+  }
+}
+
+// Delete if booking removed
+export async function deleteBookingFromCalendar(calendarId: string, bookingId: string) {
+  try {
+    await calendar.events.delete({
+      calendarId,
+      eventId: bookingId,
+    });
+    console.log(`🗑️ Deleted booking ${bookingId} from calendar ${calendarId}`);
+  } catch (err: any) {
+    if (err.code === 404) {
+      console.log(`⚠️ Event ${bookingId} not found in calendar ${calendarId}`);
     } else {
       throw err;
     }
