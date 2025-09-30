@@ -1,47 +1,63 @@
-import { db } from '../lib/firebase';
-import { upsertBookingToCalendar, deleteBookingFromCalendar } from '../lib/google-calendar';
+import { db } from './firebase';
+import calendar, { upsertBookingToCalendar, deleteBookingFromCalendar } from './google-calendar';
 
-export default async function handler(req: any, res: any) {
-  try {
-    const calendarId = process.env.GOOGLE_CALENDAR_ID;
-    if (!calendarId) {
-      console.error('❌ GOOGLE_CALENDAR_ID is not set');
-      return res.status(500).json({ error: 'GOOGLE_CALENDAR_ID is not set' });
-    }
+/**
+ * Fetch all units from Firestore
+ */
+async function fetchUnits() {
+  const snapshot = await db.collection('units').get();
+  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+}
 
-    // Fetch all units
-    const unitsSnapshot = await db.collection('units').get();
-    const units = unitsSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as any[];
+/**
+ * Fetch bookings for a given unit
+ */
+async function fetchBookingsForUnit(unitId: string) {
+  const snapshot = await db
+    .collection('bookings')
+    .where('unitId', '==', unitId)
+    .get();
 
-    console.log(`📦 Found ${units.length} units`);
+  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+}
 
-    for (const unit of units) {
-      console.log(`\n🔹 Processing unit: ${unit.name} (${unit.id}) with colorId=${unit.colorId || '1'}`);
+/**
+ * Sync all bookings to Google Calendar
+ */
+export default async function syncBookings() {
+  console.log('📦 Starting booking sync...');
 
-      // Fetch all bookings for this unit
-      const bookingsSnapshot = await db
-        .collection('bookings')
-        .where('unitId', '==', unit.id)
-        .get();
+  const units = await fetchUnits();
+  console.log(`🔹 Found ${units.length} units`);
 
-      const bookings = bookingsSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
-      console.log(`📅 Found ${bookings.length} bookings for unit ${unit.name}`);
+  for (const unit of units) {
+    console.log(`➡️ Processing unit: ${unit.name} (${unit.id}) with colorId=${unit.colorId || 1}`);
 
-      for (const booking of bookings) {
-        console.log(`➡️ Syncing booking ${booking.id} (${booking.guestFirstName || 'Unknown'})`);
-        try {
-          await upsertBookingToCalendar(booking, unit);
-        } catch (err) {
-          console.error(`❌ Error syncing booking ${booking.id}`, err);
-        }
+    const bookings = await fetchBookingsForUnit(unit.id);
+    console.log(`📅 Found ${bookings.length} bookings for unit ${unit.name}`);
+
+    for (const booking of bookings) {
+      try {
+        // Let Google Calendar generate an ID instead of using Firestore ID
+        await upsertBookingToCalendar({ ...booking, id: undefined }, unit);
+      } catch (err: any) {
+        console.error(`❌ Error syncing booking ${booking.id}`, err.message || err);
       }
     }
+  }
 
-    return res
-      .status(200)
-      .json({ message: 'Bookings synced to Google Calendar (single calendar, color-coded)' });
-  } catch (error) {
-    console.error('❌ Sync failed', error);
-    return res.status(500).json({ error: 'Sync failed' });
+  console.log('✅ Booking sync completed.');
+}
+
+/**
+ * Optional: endpoint for Vercel serverless function
+ */
+export async function handler(req: any, res: any) {
+  try {
+    await syncBookings();
+    res.status(200).json({ message: 'Booking sync completed' });
+  } catch (err) {
+    console.error('❌ Booking sync failed', err);
+    res.status(500).json({ error: 'Booking sync failed', details: err.message || err });
   }
 }
