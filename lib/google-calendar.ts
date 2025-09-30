@@ -1,4 +1,5 @@
 import { google } from 'googleapis';
+import { adminDb } from './firebase-admin'; // adjust your path
 
 const serviceAccount = JSON.parse(
   process.env.GOOGLE_SERVICE_ACCOUNT || '{}'
@@ -32,13 +33,24 @@ async function safeApiCall(fn: () => Promise<any>, retries = 5, delayMs = 1000):
         if (attempt < retries) {
           console.warn(`⚠️ Rate limit exceeded, retrying attempt ${attempt + 1} in ${delayMs}ms`);
           await delay(delayMs);
-          delayMs *= 2; // exponential backoff
+          delayMs *= 2;
           continue;
         }
       }
       throw err;
     }
   }
+}
+
+/**
+ * Ensure Firestore documents include their ID
+ */
+export async function attachBookingIds(collectionName: string) {
+  const snapshot = await adminDb.collection(collectionName).get();
+  return snapshot.docs.map(doc => ({
+    id: doc.id,
+    ...doc.data(),
+  }));
 }
 
 /**
@@ -64,10 +76,8 @@ async function removeDuplicateBookings(booking: any, unit: any) {
     );
 
     const events = res.data.items || [];
+    if (events.length <= 1) return;
 
-    if (events.length <= 1) return; // nothing to remove
-
-    // Keep the first event, delete duplicates in batches
     const [keep, ...duplicates] = events;
     const batchSize = 5;
 
@@ -82,15 +92,14 @@ async function removeDuplicateBookings(booking: any, unit: any) {
             }));
             console.log(`🗑️ Removed duplicate event ${dup.id} for booking ${booking.id}`);
           } catch (err: any) {
-            if (err.code === 410) return; // already deleted
+            if (err.code === 410) return;
             throw err;
           }
         }
       }));
-      await delay(500); // small delay between batches
+      await delay(500);
     }
 
-    // Assign the kept event ID to booking
     booking.googleCalendarEventId = keep.id;
   } catch (err: any) {
     console.error(`❌ Failed to remove duplicates for booking ${booking.id}`, err);
@@ -98,7 +107,7 @@ async function removeDuplicateBookings(booking: any, unit: any) {
 }
 
 /**
- * Upsert booking into Google Calendar (all-day, check-in only)
+ * Upsert booking into Google Calendar
  */
 export async function upsertBookingToCalendar(booking: any, unit: any) {
   if (!booking.checkinDate || !booking.id) {
@@ -122,7 +131,6 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
   };
 
   try {
-    // Only remove duplicates if no googleCalendarEventId yet
     if (!booking.googleCalendarEventId) {
       await removeDuplicateBookings(booking, unit);
     }
