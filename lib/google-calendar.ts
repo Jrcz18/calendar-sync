@@ -17,38 +17,35 @@ const jwtClient = new google.auth.JWT(
 
 const calendar = google.calendar({ version: 'v3', auth: jwtClient });
 
-export default calendar;
-
-// --- Helper: delay ---
+// Utility delay
 function delay(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// --- Helper: safe API call with exponential backoff ---
-async function safeApiCall(fn: () => Promise<any>, maxRetries = 5, retryDelay = 1000) {
-  let attempt = 0;
-  while (attempt < maxRetries) {
+// Safe API call with retry for rate limits
+async function safeApiCall(fn: () => Promise<any>, retries = 5, delayMs = 1000): Promise<any> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       return await fn();
     } catch (err: any) {
-      if (err?.errors?.[0]?.reason === 'rateLimitExceeded' || err?.code === 403) {
-        attempt++;
-        console.warn(`⚠️ Rate limit exceeded, retrying attempt ${attempt} in ${retryDelay}ms`);
-        await delay(retryDelay);
-        retryDelay *= 2; // exponential backoff
-      } else {
-        throw err;
+      if (err.code === 403 && err.errors?.[0]?.reason === 'rateLimitExceeded') {
+        if (attempt < retries) {
+          console.warn(`⚠️ Rate limit exceeded, retrying attempt ${attempt + 1} in ${delayMs}ms`);
+          await delay(delayMs);
+          delayMs *= 2; // exponential backoff
+          continue;
+        }
       }
+      throw err;
     }
   }
-  throw new Error('Max retries reached due to rate limit');
 }
 
 /**
  * Remove duplicate events for a booking (keeps the first, deletes the rest)
  */
 async function removeDuplicateBookings(booking: any, unit: any) {
-  if (!booking.checkinDate) return;
+  if (!booking.checkinDate || !booking.id) return;
 
   const startDate = new Date(booking.checkinDate);
   const endDate = new Date(startDate);
@@ -57,28 +54,40 @@ async function removeDuplicateBookings(booking: any, unit: any) {
   const summary = `Booking: ${unit.name}`;
 
   try {
-    const res = await safeApiCall(() => calendar.events.list({
-      calendarId: process.env.GOOGLE_CALENDAR_ID!,
-      timeMin: startDate.toISOString(),
-      timeMax: endDate.toISOString(),
-      q: summary,
-    }));
+    const res = await safeApiCall(() =>
+      calendar.events.list({
+        calendarId: process.env.GOOGLE_CALENDAR_ID!,
+        timeMin: startDate.toISOString(),
+        timeMax: endDate.toISOString(),
+        q: summary,
+      })
+    );
 
     const events = res.data.items || [];
 
     if (events.length <= 1) return; // nothing to remove
 
-    // Keep the first event, delete duplicates
+    // Keep the first event, delete duplicates in batches
     const [keep, ...duplicates] = events;
-    for (const dup of duplicates) {
-      if (dup.id) {
-        await safeApiCall(() => calendar.events.delete({
-          calendarId: process.env.GOOGLE_CALENDAR_ID!,
-          eventId: dup.id,
-        }));
-        console.log(`🗑️ Removed duplicate event ${dup.id} for booking ${booking.id}`);
-        await delay(200); // small delay to avoid hitting rate limit
-      }
+    const batchSize = 5;
+
+    for (let i = 0; i < duplicates.length; i += batchSize) {
+      const batch = duplicates.slice(i, i + batchSize);
+      await Promise.all(batch.map(async (dup) => {
+        if (dup.id) {
+          try {
+            await safeApiCall(() => calendar.events.delete({
+              calendarId: process.env.GOOGLE_CALENDAR_ID!,
+              eventId: dup.id,
+            }));
+            console.log(`🗑️ Removed duplicate event ${dup.id} for booking ${booking.id}`);
+          } catch (err: any) {
+            if (err.code === 410) return; // already deleted
+            throw err;
+          }
+        }
+      }));
+      await delay(500); // small delay between batches
     }
 
     // Assign the kept event ID to booking
@@ -92,8 +101,8 @@ async function removeDuplicateBookings(booking: any, unit: any) {
  * Upsert booking into Google Calendar (all-day, check-in only)
  */
 export async function upsertBookingToCalendar(booking: any, unit: any) {
-  if (!booking.checkinDate) {
-    console.error(`❌ Booking ${booking.id} missing checkinDate`, booking);
+  if (!booking.checkinDate || !booking.id) {
+    console.error(`❌ Booking missing checkinDate or id`, booking);
     return;
   }
 
@@ -113,27 +122,33 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
   };
 
   try {
-    // Remove duplicates first
-    await removeDuplicateBookings(booking, unit);
+    // Only remove duplicates if no googleCalendarEventId yet
+    if (!booking.googleCalendarEventId) {
+      await removeDuplicateBookings(booking, unit);
+    }
 
-    if (booking.googleCalendarEventId) {
-      // Update existing event
-      await safeApiCall(() => calendar.events.update({
-        calendarId: process.env.GOOGLE_CALENDAR_ID!,
-        eventId: booking.googleCalendarEventId,
-        requestBody: eventBody,
-      }));
+    const googleEventId = booking.googleCalendarEventId;
+
+    if (googleEventId) {
+      await safeApiCall(() =>
+        calendar.events.update({
+          calendarId: process.env.GOOGLE_CALENDAR_ID!,
+          eventId: googleEventId,
+          requestBody: eventBody,
+        })
+      );
       console.log(`✅ Updated booking ${booking.id}`);
     } else {
-      // Insert new event
-      const inserted = await safeApiCall(() => calendar.events.insert({
-        calendarId: process.env.GOOGLE_CALENDAR_ID!,
-        requestBody: eventBody,
-      }));
+      const inserted = await safeApiCall(() =>
+        calendar.events.insert({
+          calendarId: process.env.GOOGLE_CALENDAR_ID!,
+          requestBody: eventBody,
+        })
+      );
       booking.googleCalendarEventId = inserted.data.id;
       console.log(`➕ Inserted booking ${booking.id}`);
     }
-    await delay(200); // small delay between bookings
+
   } catch (err: any) {
     console.error(`❌ Failed to sync booking ${booking.id}`, err);
   }
@@ -149,14 +164,16 @@ export async function deleteBookingFromCalendar(bookingId: string, googleEventId
   }
 
   try {
-    await safeApiCall(() => calendar.events.delete({
-      calendarId: process.env.GOOGLE_CALENDAR_ID!,
-      eventId: googleEventId,
-    }));
+    await safeApiCall(() =>
+      calendar.events.delete({
+        calendarId: process.env.GOOGLE_CALENDAR_ID!,
+        eventId: googleEventId,
+      })
+    );
     console.log(`🗑️ Deleted booking ${bookingId}`);
   } catch (err: any) {
-    if (err.code === 404) {
-      console.log(`⚠️ Booking ${bookingId} not found in Google Calendar`);
+    if (err.code === 404 || err.code === 410) {
+      console.log(`⚠️ Booking ${bookingId} not found or already deleted`);
     } else {
       console.error(`❌ Failed to delete booking ${bookingId}`, err);
     }
