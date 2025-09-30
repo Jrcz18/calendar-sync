@@ -1,77 +1,87 @@
-import { db } from '../lib/firebase';
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { getFirestore } from 'firebase-admin/firestore';
+import { initializeApp, getApps, cert } from 'firebase-admin/app';
 import { calendar } from '../lib/google-calendar';
 
-export default async function handler(req: any, res: any) {
+// Initialize Firebase Admin if not already initialized
+if (!getApps().length) {
+  initializeApp({
+    credential: cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+      privateKey: process.env.GOOGLE_SERVICE_ACCOUNT_KEY?.replace(/\\n/g, '\n'),
+    }),
+  });
+}
+
+const db = getFirestore();
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  console.log('🚀 Sync job started');
+
   try {
-    const calendarId = process.env.GOOGLE_CALENDAR_ID;
-    if (!calendarId) {
-      console.error('❌ Missing GOOGLE_CALENDAR_ID env variable');
-      return res.status(500).json({ error: 'GOOGLE_CALENDAR_ID is not set' });
-    }
-
-    console.log('🚀 Sync job started');
-    console.log(`Using calendarId: ${calendarId}`);
-
-    // Fetch all units
     const unitsSnapshot = await db.collection('units').get();
-    const units = unitsSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as any[];
+    console.log(`📦 Found ${unitsSnapshot.size} units`);
 
-    console.log(`📦 Found ${units.length} units`);
+    for (const unitDoc of unitsSnapshot.docs) {
+      const unit = { id: unitDoc.id, ...unitDoc.data() } as any;
 
-    for (const unit of units) {
-      console.log(`\n➡️ Processing unit: ${unit.id} (${unit.name})`);
-      const colorId = unit.colorId || '9'; // fallback Blueberry if missing
-
-      // Fetch all bookings for this unit
+      // Fetch bookings for this unit
       const bookingsSnapshot = await db
         .collection('bookings')
         .where('unitId', '==', unit.id)
         .get();
 
-      console.log(`   📑 Found ${bookingsSnapshot.docs.length} bookings for this unit`);
+      console.log(`📅 Found ${bookingsSnapshot.size} bookings for unit ${unit.id}`);
 
       for (const bookingDoc of bookingsSnapshot.docs) {
         const booking = { id: bookingDoc.id, ...bookingDoc.data() } as any;
-        console.log(`   ⏳ Syncing booking ${booking.id}:`, booking);
+
+        const startDate = booking.checkinDate;
+
+        if (!startDate) {
+          console.error(`❌ Booking ${booking.id} missing checkinDate`, booking);
+          continue;
+        }
+
+        // End date = next day (exclusive) so event only shows on the check-in date
+        const endDate = new Date(startDate);
+        endDate.setDate(endDate.getDate() + 1);
 
         const event = {
           id: booking.id,
           summary: `Booking: ${unit.name}`,
-          description: `Booked by ${booking.customerName || 'Unknown'}`,
-          start: { dateTime: booking.startDate },
-          end: { dateTime: booking.endDate },
-          colorId,
+          description: `Booked by ${booking.guestFirstName || ''} ${booking.guestLastName || ''}`,
+          start: { date: startDate },
+          end: { date: endDate.toISOString().split('T')[0] },
+          colorId: unit.colorId || '1',
         };
 
         try {
-          // Try updating existing event
           await calendar.events.update({
-            calendarId,
+            calendarId: process.env.GOOGLE_CALENDAR_ID!,
             eventId: booking.id,
             requestBody: event,
           });
-          console.log(`   ✅ Updated booking ${booking.id} in calendar`);
+          console.log(`✅ Updated booking ${booking.id}`);
         } catch (err: any) {
           if (err.code === 404) {
-            console.log(`   ➕ Event not found, inserting booking ${booking.id}`);
             await calendar.events.insert({
-              calendarId,
+              calendarId: process.env.GOOGLE_CALENDAR_ID!,
               requestBody: event,
             });
-            console.log(`   ✅ Inserted booking ${booking.id}`);
+            console.log(`➕ Inserted booking ${booking.id}`);
           } else {
-            console.error(`   ❌ Failed to sync booking ${booking.id}:`, err);
+            console.error(`❌ Failed to sync booking ${booking.id}`, err);
           }
         }
       }
     }
 
-    console.log('🎉 Sync job finished successfully');
-    return res
-      .status(200)
-      .json({ message: 'Bookings synced to Google Calendar (single calendar, color-coded)' });
-  } catch (error) {
-    console.error('🔥 Sync failed:', error);
-    return res.status(500).json({ error: 'Sync failed' });
+    console.log('🎉 Sync completed successfully');
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    console.error('❌ Sync job failed', err);
+    return res.status(500).json({ error: 'Sync job failed', details: err });
   }
 }
