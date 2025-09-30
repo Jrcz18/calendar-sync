@@ -35,7 +35,7 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
   const endDate = new Date(startDate);
   endDate.setDate(endDate.getDate() + 1);
 
-  const event = {
+  const eventBody = {
     summary: `Booking: ${unit.name}`,
     description: `Booked by ${firstName} ${lastName}`.trim(),
     start: { date: startDate.toISOString().split('T')[0] },
@@ -44,27 +44,44 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
   };
 
   try {
-    if (booking.googleCalendarEventId) {
-      // Try updating existing event
+    let googleEventId = booking.googleCalendarEventId;
+
+    if (!googleEventId) {
+      // Search for existing event with same summary & start date
+      const res = await calendar.events.list({
+        calendarId: process.env.GOOGLE_CALENDAR_ID!,
+        timeMin: startDate.toISOString(),
+        timeMax: endDate.toISOString(),
+        q: eventBody.summary,
+      });
+
+      const existingEvent = res.data.items?.find(e => e.summary === eventBody.summary);
+
+      if (existingEvent) {
+        googleEventId = existingEvent.id;
+        booking.googleCalendarEventId = googleEventId;
+        console.log(`⚠️ Booking ${booking.id} already exists on Google Calendar, skipping insert`);
+      }
+    }
+
+    if (googleEventId) {
+      // Update existing event
       await calendar.events.update({
         calendarId: process.env.GOOGLE_CALENDAR_ID!,
-        eventId: booking.googleCalendarEventId,
-        requestBody: event,
+        eventId: googleEventId,
+        requestBody: eventBody,
       });
       console.log(`✅ Updated booking ${booking.id}`);
     } else {
       // Insert new event
       const inserted = await calendar.events.insert({
         calendarId: process.env.GOOGLE_CALENDAR_ID!,
-        requestBody: event,
+        requestBody: eventBody,
       });
-      console.log(`➕ Inserted booking ${booking.id}`);
-
-      // Save the generated Google Calendar event ID back to your booking
       booking.googleCalendarEventId = inserted.data.id;
-      // If using Firestore, save it:
-      // await db.collection('bookings').doc(booking.id).update({ googleCalendarEventId: inserted.data.id });
+      console.log(`➕ Inserted booking ${booking.id}`);
     }
+
   } catch (err: any) {
     console.error(`❌ Failed to sync booking ${booking.id}`, err);
   }
