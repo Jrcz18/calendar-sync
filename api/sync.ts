@@ -1,8 +1,7 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { db } from '../lib/firebase';
 import { calendar } from '../lib/google-calendar';
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default async function handler(req: any, res: any) {
   try {
     const calendarId = process.env.GOOGLE_CALENDAR_ID;
     if (!calendarId) {
@@ -14,7 +13,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const units = unitsSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as any[];
 
     for (const unit of units) {
-      const colorId = unit.colorId || '9'; // fallback to Blueberry if not set
+      const colorId = unit.colorId || '9'; // fallback Blueberry if missing
 
       // Fetch all bookings for this unit
       const bookingsSnapshot = await db
@@ -31,7 +30,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           description: `Booked by ${booking.customerName || 'Unknown'}`,
           start: { dateTime: booking.startDate },
           end: { dateTime: booking.endDate },
-          colorId, // 🎨 pulled from Firestore unit doc
+          colorId,
         };
 
         try {
@@ -55,7 +54,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    return res.status(200).json({ message: 'Bookings synced to Google Calendar (single calendar, color-coded)' });
+    return res
+      .status(200)
+      .json({ message: 'Bookings synced to Google Calendar (single calendar, color-coded)' });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ error: 'Sync failed' });
