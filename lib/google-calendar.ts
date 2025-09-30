@@ -1,76 +1,56 @@
-import { google } from 'googleapis';
+import type { NextApiRequest, NextApiResponse } from 'next';
+import { getFirestore } from 'firebase-admin/firestore';
+import { initializeApp, getApps, cert } from 'firebase-admin/app';
+import { upsertBookingToCalendar, deleteBookingFromCalendar } from '../lib/google-calendar';
 
-const jwtClient = new google.auth.JWT(
-  process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-  undefined,
-  process.env.GOOGLE_SERVICE_ACCOUNT_KEY?.replace(/\\n/g, '\n'),
-  ['https://www.googleapis.com/auth/calendar']
-);
-
-export const calendar = google.calendar({
-  version: 'v3',
-  auth: jwtClient,
-});
-
-/**
- * Insert or update a booking on the calendar.
- * Only blocks the check-in date as an all-day event.
- */
-export async function upsertBookingToCalendar(booking: any, unit: any) {
-  const startDate = booking.checkinDate;
-  if (!startDate) {
-    console.error(`❌ Booking ${booking.id} missing checkinDate`, booking);
-    return;
-  }
-
-  // End date = next day (exclusive) so event shows only on the check-in date
-  const endDate = new Date(startDate);
-  endDate.setDate(endDate.getDate() + 1);
-
-  const event = {
-    id: booking.id,
-    summary: `Booking: ${unit.name}`,
-    description: `Booked by ${booking.guestFirstName || ''} ${booking.guestLastName || ''}`,
-    start: { date: startDate },
-    end: { date: endDate.toISOString().split('T')[0] },
-    colorId: unit.colorId || '1',
-  };
-
-  try {
-    await calendar.events.update({
-      calendarId: process.env.GOOGLE_CALENDAR_ID!,
-      eventId: booking.id,
-      requestBody: event,
-    });
-    console.log(`✅ Updated booking ${booking.id}`);
-  } catch (err: any) {
-    if (err.code === 404) {
-      await calendar.events.insert({
-        calendarId: process.env.GOOGLE_CALENDAR_ID!,
-        requestBody: event,
-      });
-      console.log(`➕ Inserted booking ${booking.id}`);
-    } else {
-      console.error(`❌ Failed to sync booking ${booking.id}`, err);
-    }
-  }
+// Initialize Firebase Admin if not already initialized
+if (!getApps().length) {
+  initializeApp({
+    credential: cert({
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+      privateKey: process.env.GOOGLE_SERVICE_ACCOUNT_KEY?.replace(/\\n/g, '\n'),
+    }),
+  });
 }
 
-/**
- * Delete a booking from the calendar by its booking ID.
- */
-export async function deleteBookingFromCalendar(bookingId: string) {
+const db = getFirestore();
+
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  console.log('🚀 Sync job started');
+
   try {
-    await calendar.events.delete({
-      calendarId: process.env.GOOGLE_CALENDAR_ID!,
-      eventId: bookingId,
-    });
-    console.log(`🗑️ Deleted booking ${bookingId}`);
-  } catch (err: any) {
-    if (err.code === 404) {
-      console.log(`ℹ️ Booking ${bookingId} not found on calendar, nothing to delete.`);
-    } else {
-      console.error(`❌ Failed to delete booking ${bookingId}`, err);
+    const unitsSnapshot = await db.collection('units').get();
+    console.log(`📦 Found ${unitsSnapshot.size} units`);
+
+    for (const unitDoc of unitsSnapshot.docs) {
+      const unit = { id: unitDoc.id, ...unitDoc.data() } as any;
+
+      // Fetch bookings for this unit
+      const bookingsSnapshot = await db
+        .collection('bookings')
+        .where('unitId', '==', unit.id)
+        .get();
+
+      console.log(`📅 Found ${bookingsSnapshot.size} bookings for unit ${unit.id}`);
+
+      for (const bookingDoc of bookingsSnapshot.docs) {
+        const booking = { id: bookingDoc.id, ...bookingDoc.data() } as any;
+
+        if (booking.status === 'cancelled') {
+          console.log(`🗑️ Booking ${booking.id} is cancelled, removing from calendar...`);
+          await deleteBookingFromCalendar(booking.id);
+        } else {
+          console.log(`🔄 Syncing booking ${booking.id} to calendar...`);
+          await upsertBookingToCalendar(booking, unit);
+        }
+      }
     }
+
+    console.log('🎉 Sync completed successfully');
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    console.error('❌ Sync job failed', err);
+    return res.status(500).json({ error: 'Sync job failed', details: err });
   }
 }
