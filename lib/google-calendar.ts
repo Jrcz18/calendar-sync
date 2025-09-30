@@ -1,16 +1,26 @@
 import { google } from 'googleapis';
 
+const serviceAccount = JSON.parse(
+  process.env.GOOGLE_SERVICE_ACCOUNT || '{}'
+);
+
+if (!serviceAccount || !serviceAccount.client_email || !serviceAccount.private_key) {
+  throw new Error('GOOGLE_SERVICE_ACCOUNT env is missing or invalid');
+}
+
 const jwtClient = new google.auth.JWT(
-  JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT!).client_email,
+  serviceAccount.client_email,
   undefined,
-  JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT!).private_key.replace(/\\n/g, '\n'),
+  serviceAccount.private_key.replace(/\\n/g, '\n'),
   ['https://www.googleapis.com/auth/calendar']
 );
 
 const calendar = google.calendar({ version: 'v3', auth: jwtClient });
 
+export default calendar;
+
 /**
- * Upsert booking into Google Calendar (all-day, check-in only).
+ * Upsert booking into Google Calendar (all-day, check-in only)
  */
 export async function upsertBookingToCalendar(booking: any, unit: any) {
   if (!booking.checkinDate) {
@@ -18,7 +28,6 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
     return;
   }
 
-  // End date = next day (exclusive)
   const endDate = new Date(booking.checkinDate);
   endDate.setDate(endDate.getDate() + 1);
 
@@ -52,7 +61,7 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
 }
 
 /**
- * Delete booking from Google Calendar.
+ * Delete booking from Google Calendar
  */
 export async function deleteBookingFromCalendar(bookingId: string) {
   try {
