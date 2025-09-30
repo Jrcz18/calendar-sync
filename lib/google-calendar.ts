@@ -1,4 +1,3 @@
-// lib/google-calendar.ts
 import { google } from 'googleapis';
 
 const serviceAccount = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY!);
@@ -10,7 +9,7 @@ const jwtClient = new google.auth.JWT(
   ['https://www.googleapis.com/auth/calendar']
 );
 
-const calendar = google.calendar({ version: 'v3', auth: jwtClient });
+export const calendar = google.calendar({ version: 'v3', auth: jwtClient });
 
 interface BookingEvent {
   id: string;
