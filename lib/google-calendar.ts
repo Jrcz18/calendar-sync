@@ -1,16 +1,13 @@
 import { google } from 'googleapis';
 
 const jwtClient = new google.auth.JWT(
-  process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+  JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT!).client_email,
   undefined,
-  process.env.GOOGLE_SERVICE_ACCOUNT_KEY?.replace(/\\n/g, '\n'),
+  JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT!).private_key.replace(/\\n/g, '\n'),
   ['https://www.googleapis.com/auth/calendar']
 );
 
-const calendar = google.calendar({
-  version: 'v3',
-  auth: jwtClient,
-});
+const calendar = google.calendar({ version: 'v3', auth: jwtClient });
 
 /**
  * Upsert booking into Google Calendar (all-day, check-in only).
@@ -21,7 +18,7 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
     return;
   }
 
-  // End date = next day (exclusive) → event shows only on check-in day
+  // End date = next day (exclusive)
   const endDate = new Date(booking.checkinDate);
   endDate.setDate(endDate.getDate() + 1);
 
