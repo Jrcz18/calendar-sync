@@ -1,29 +1,24 @@
-import { getFirestore } from 'firebase-admin/firestore';
-import { initializeApp, getApps, cert } from 'firebase-admin/app';
-import { upsertBookingToCalendar, deleteBookingFromCalendar } from '../lib/google-calendar';
-
-// Initialize Firebase Admin if not already initialized
-if (!getApps().length) {
-  initializeApp({
-    credential: cert({
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-      privateKey: process.env.GOOGLE_SERVICE_ACCOUNT_KEY?.replace(/\\n/g, '\n'),
-    }),
-  });
-}
-
-const db = getFirestore();
+// api/sync.ts
+import { db } from '../lib/firebase';
+import calendar from '../lib/google-calendar';
 
 export default async function handler(req: any, res: any) {
-  console.log('🚀 Sync job started');
-
   try {
-    const unitsSnapshot = await db.collection('units').get();
-    console.log(`📦 Found ${unitsSnapshot.size} units`);
+    const calendarId = process.env.GOOGLE_CALENDAR_ID;
+    if (!calendarId) {
+      console.error('❌ GOOGLE_CALENDAR_ID is not set');
+      return res.status(500).json({ error: 'GOOGLE_CALENDAR_ID is not set' });
+    }
 
-    for (const unitDoc of unitsSnapshot.docs) {
-      const unit = { id: unitDoc.id, ...unitDoc.data() } as any;
+    console.log('⏱️ Starting booking sync...');
+
+    // Fetch all units
+    const unitsSnapshot = await db.collection('units').get();
+    const units = unitsSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as any[];
+
+    for (const unit of units) {
+      const colorId = unit.colorId || '9'; // default color if missing
+      console.log(`📌 Syncing unit "${unit.name}" with colorId ${colorId}`);
 
       // Fetch bookings for this unit
       const bookingsSnapshot = await db
@@ -31,25 +26,46 @@ export default async function handler(req: any, res: any) {
         .where('unitId', '==', unit.id)
         .get();
 
-      console.log(`📅 Found ${bookingsSnapshot.size} bookings for unit ${unit.id}`);
-
       for (const bookingDoc of bookingsSnapshot.docs) {
         const booking = { id: bookingDoc.id, ...bookingDoc.data() } as any;
 
-        if (booking.status === 'cancelled') {
-          console.log(`🗑️ Booking ${booking.id} is cancelled, removing from calendar...`);
-          await deleteBookingFromCalendar(booking.id);
-        } else {
-          console.log(`🔄 Syncing booking ${booking.id} to calendar...`);
-          await upsertBookingToCalendar(booking, unit);
+        // All-day event using checkinDate
+        const event = {
+          id: booking.id,
+          summary: `Booking: ${unit.name}`,
+          description: `Booked by ${booking.guestFirstName || 'Unknown'} ${booking.guestLastName || ''}`,
+          start: { date: booking.checkinDate },   // all-day event
+          end: { date: booking.checkinDate },     // same day
+          colorId,
+        };
+
+        try {
+          // Try updating existing event
+          await calendar.events.update({
+            calendarId,
+            eventId: booking.id,
+            requestBody: event,
+          });
+          console.log(`✅ Updated booking ${booking.id}`);
+        } catch (err: any) {
+          if (err.code === 404) {
+            // Insert new event if not found
+            await calendar.events.insert({
+              calendarId,
+              requestBody: event,
+            });
+            console.log(`➕ Inserted booking ${booking.id}`);
+          } else {
+            console.error(`⚠️ Failed to sync booking ${booking.id}:`, err.message || err);
+          }
         }
       }
     }
 
-    console.log('🎉 Sync completed successfully');
-    return res.status(200).json({ success: true });
-  } catch (err) {
-    console.error('❌ Sync job failed', err);
-    return res.status(500).json({ error: 'Sync job failed', details: err });
+    console.log('✅ Booking sync completed');
+    return res.status(200).json({ message: 'Bookings synced to Google Calendar (single calendar, color-coded)' });
+  } catch (error: any) {
+    console.error('❌ Sync failed:', error.message || error);
+    return res.status(500).json({ error: 'Sync failed' });
   }
 }
