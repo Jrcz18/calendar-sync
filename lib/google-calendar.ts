@@ -20,6 +20,49 @@ const calendar = google.calendar({ version: 'v3', auth: jwtClient });
 export default calendar;
 
 /**
+ * Remove duplicate events for a booking (keeps the first, deletes the rest)
+ */
+async function removeDuplicateBookings(booking: any, unit: any) {
+  if (!booking.checkinDate) return;
+
+  const startDate = new Date(booking.checkinDate);
+  const endDate = new Date(startDate);
+  endDate.setDate(endDate.getDate() + 1);
+
+  const summary = `Booking: ${unit.name}`;
+
+  try {
+    const res = await calendar.events.list({
+      calendarId: process.env.GOOGLE_CALENDAR_ID!,
+      timeMin: startDate.toISOString(),
+      timeMax: endDate.toISOString(),
+      q: summary,
+    });
+
+    const events = res.data.items || [];
+
+    if (events.length <= 1) return; // nothing to remove
+
+    // Keep the first event, delete duplicates
+    const [keep, ...duplicates] = events;
+    for (const dup of duplicates) {
+      if (dup.id) {
+        await calendar.events.delete({
+          calendarId: process.env.GOOGLE_CALENDAR_ID!,
+          eventId: dup.id,
+        });
+        console.log(`🗑️ Removed duplicate event ${dup.id} for booking ${booking.id}`);
+      }
+    }
+
+    // Assign the kept event ID to booking
+    booking.googleCalendarEventId = keep.id;
+  } catch (err: any) {
+    console.error(`❌ Failed to remove duplicates for booking ${booking.id}`, err);
+  }
+}
+
+/**
  * Upsert booking into Google Calendar (all-day, check-in only)
  */
 export async function upsertBookingToCalendar(booking: any, unit: any) {
@@ -44,25 +87,10 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
   };
 
   try {
-    let googleEventId = booking.googleCalendarEventId;
+    // Remove duplicates before insert/update
+    await removeDuplicateBookings(booking, unit);
 
-    if (!googleEventId) {
-      // Search for existing event with same summary & start date
-      const res = await calendar.events.list({
-        calendarId: process.env.GOOGLE_CALENDAR_ID!,
-        timeMin: startDate.toISOString(),
-        timeMax: endDate.toISOString(),
-        q: eventBody.summary,
-      });
-
-      const existingEvent = res.data.items?.find(e => e.summary === eventBody.summary);
-
-      if (existingEvent) {
-        googleEventId = existingEvent.id;
-        booking.googleCalendarEventId = googleEventId;
-        console.log(`⚠️ Booking ${booking.id} already exists on Google Calendar, skipping insert`);
-      }
-    }
+    const googleEventId = booking.googleCalendarEventId;
 
     if (googleEventId) {
       // Update existing event
