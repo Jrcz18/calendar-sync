@@ -1,7 +1,6 @@
-import type { NextApiRequest, NextApiResponse } from 'next';
 import { getFirestore } from 'firebase-admin/firestore';
 import { initializeApp, getApps, cert } from 'firebase-admin/app';
-import { calendar } from '../lib/google-calendar';
+import { upsertBookingToCalendar, deleteBookingFromCalendar } from '../lib/google-calendar';
 
 // Initialize Firebase Admin if not already initialized
 if (!getApps().length) {
@@ -16,7 +15,7 @@ if (!getApps().length) {
 
 const db = getFirestore();
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+export default async function handler(req: any, res: any) {
   console.log('🚀 Sync job started');
 
   try {
@@ -37,43 +36,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       for (const bookingDoc of bookingsSnapshot.docs) {
         const booking = { id: bookingDoc.id, ...bookingDoc.data() } as any;
 
-        const startDate = booking.checkinDate;
-
-        if (!startDate) {
-          console.error(`❌ Booking ${booking.id} missing checkinDate`, booking);
-          continue;
-        }
-
-        // End date = next day (exclusive) so event only shows on the check-in date
-        const endDate = new Date(startDate);
-        endDate.setDate(endDate.getDate() + 1);
-
-        const event = {
-          id: booking.id,
-          summary: `Booking: ${unit.name}`,
-          description: `Booked by ${booking.guestFirstName || ''} ${booking.guestLastName || ''}`,
-          start: { date: startDate },
-          end: { date: endDate.toISOString().split('T')[0] },
-          colorId: unit.colorId || '1',
-        };
-
-        try {
-          await calendar.events.update({
-            calendarId: process.env.GOOGLE_CALENDAR_ID!,
-            eventId: booking.id,
-            requestBody: event,
-          });
-          console.log(`✅ Updated booking ${booking.id}`);
-        } catch (err: any) {
-          if (err.code === 404) {
-            await calendar.events.insert({
-              calendarId: process.env.GOOGLE_CALENDAR_ID!,
-              requestBody: event,
-            });
-            console.log(`➕ Inserted booking ${booking.id}`);
-          } else {
-            console.error(`❌ Failed to sync booking ${booking.id}`, err);
-          }
+        if (booking.status === 'cancelled') {
+          console.log(`🗑️ Booking ${booking.id} is cancelled, removing from calendar...`);
+          await deleteBookingFromCalendar(booking.id);
+        } else {
+          console.log(`🔄 Syncing booking ${booking.id} to calendar...`);
+          await upsertBookingToCalendar(booking, unit);
         }
       }
     }
