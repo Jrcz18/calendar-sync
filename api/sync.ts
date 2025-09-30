@@ -1,8 +1,7 @@
 // api/sync.ts
 import { db } from '../lib/firebase';
-import { insertBookingToCalendar } from '../lib/google-calendar';
+import { upsertBookingToCalendar } from '../lib/google-calendar';
 
-// Vercel handler – no @vercel/node needed
 export default async function handler(req: any, res: any) {
   try {
     // Get units with calendarId
@@ -26,9 +25,9 @@ export default async function handler(req: any, res: any) {
         ...doc.data(),
       })) as any[];
 
-      // Insert each booking to Google Calendar
+      // Upsert each booking to Google Calendar
       for (const booking of bookings) {
-        await insertBookingToCalendar(unit.calendarId, {
+        await upsertBookingToCalendar(unit.calendarId, {
           id: booking.id,
           title: booking.guestName || `Booking ${booking.id}`,
           start: booking.startDate,
