@@ -19,6 +19,11 @@ const calendar = google.calendar({ version: 'v3', auth: jwtClient });
 
 export default calendar;
 
+// sanitize booking ID for Google Calendar
+function sanitizeEventId(id: string) {
+  return id.replace(/[^a-zA-Z0-9-_]/g, '_'); // only allow letters, numbers, hyphens, underscores
+}
+
 /**
  * Upsert booking into Google Calendar (all-day, check-in only)
  */
@@ -31,8 +36,10 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
   const endDate = new Date(booking.checkinDate);
   endDate.setDate(endDate.getDate() + 1);
 
+  const eventId = sanitizeEventId(booking.id);
+
   const event = {
-    id: booking.id,
+    id: eventId,
     summary: `Booking: ${unit.name}`,
     description: `Booked by ${booking.guestFirstName || ''} ${booking.guestLastName || ''}`,
     start: { date: booking.checkinDate },
@@ -43,7 +50,7 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
   try {
     await calendar.events.update({
       calendarId: process.env.GOOGLE_CALENDAR_ID!,
-      eventId: booking.id,
+      eventId,
       requestBody: event,
     });
     console.log(`✅ Updated booking ${booking.id}`);
@@ -64,10 +71,11 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
  * Delete booking from Google Calendar
  */
 export async function deleteBookingFromCalendar(bookingId: string) {
+  const eventId = sanitizeEventId(bookingId);
   try {
     await calendar.events.delete({
       calendarId: process.env.GOOGLE_CALENDAR_ID!,
-      eventId: bookingId,
+      eventId,
     });
     console.log(`🗑️ Deleted booking ${bookingId}`);
   } catch (err: any) {
