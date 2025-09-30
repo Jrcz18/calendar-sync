@@ -17,97 +17,14 @@ const jwtClient = new google.auth.JWT(
 
 const calendar = google.calendar({ version: 'v3', auth: jwtClient });
 
-// Utility delay
-function delay(ms: number) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// Safe API call with retry for rate limits
-async function safeApiCall(fn: () => Promise<any>, retries = 5, delayMs = 1000): Promise<any> {
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      return await fn();
-    } catch (err: any) {
-      if (err.code === 403 && err.errors?.[0]?.reason === 'rateLimitExceeded') {
-        if (attempt < retries) {
-          console.warn(`⚠️ Rate limit exceeded, retrying attempt ${attempt + 1} in ${delayMs}ms`);
-          await delay(delayMs);
-          delayMs *= 2; // exponential backoff
-          continue;
-        }
-      }
-      throw err;
-    }
-  }
-}
-
-/**
- * Remove duplicate events for a booking (keeps the first, deletes the rest)
- */
-async function removeDuplicateBookings(booking: any, unit: any) {
-  if (!booking.checkinDate || !booking.id) return;
-
-  const startDate = new Date(booking.checkinDate);
-  const endDate = new Date(startDate);
-  endDate.setDate(endDate.getDate() + 1);
-
-  const summary = `Booking: ${unit.name}`;
-
-  try {
-    const res = await safeApiCall(() =>
-      calendar.events.list({
-        calendarId: process.env.GOOGLE_CALENDAR_ID!,
-        timeMin: startDate.toISOString(),
-        timeMax: endDate.toISOString(),
-        q: summary,
-      })
-    );
-
-    const events = res.data.items || [];
-
-    if (events.length <= 1) return; // nothing to remove
-
-    // Keep the first event, delete duplicates in batches
-    const [keep, ...duplicates] = events;
-    const batchSize = 5;
-
-    for (let i = 0; i < duplicates.length; i += batchSize) {
-      const batch = duplicates.slice(i, i + batchSize);
-      await Promise.all(batch.map(async (dup) => {
-        if (dup.id) {
-          try {
-            await safeApiCall(() => calendar.events.delete({
-              calendarId: process.env.GOOGLE_CALENDAR_ID!,
-              eventId: dup.id,
-            }));
-            console.log(`🗑️ Removed duplicate event ${dup.id} for booking ${booking.id}`);
-          } catch (err: any) {
-            if (err.code === 410) return; // already deleted
-            throw err;
-          }
-        }
-      }));
-      await delay(500); // small delay between batches
-    }
-
-    // Assign the kept event ID to booking
-    booking.googleCalendarEventId = keep.id;
-  } catch (err: any) {
-    console.error(`❌ Failed to remove duplicates for booking ${booking.id}`, err);
-  }
-}
+export default calendar;
 
 /**
  * Upsert booking into Google Calendar (all-day, check-in only)
  */
 export async function upsertBookingToCalendar(booking: any, unit: any) {
-  // Ensure booking.id exists (for backfilled bookings)
-  if (!booking.id && booking.firestoreDocId) {
-    booking.id = booking.firestoreDocId;
-  }
-
-  if (!booking.checkinDate || !booking.id) {
-    console.error(`❌ Booking missing checkinDate or id`, booking);
+  if (!booking.checkinDate) {
+    console.error(`❌ Booking ${booking.id} missing checkinDate`, booking);
     return;
   }
 
@@ -118,7 +35,7 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
   const endDate = new Date(startDate);
   endDate.setDate(endDate.getDate() + 1);
 
-  const eventBody = {
+  const event = {
     summary: `Booking: ${unit.name}`,
     description: `Booked by ${firstName} ${lastName}`.trim(),
     start: { date: startDate.toISOString().split('T')[0] },
@@ -127,33 +44,27 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
   };
 
   try {
-    // Only remove duplicates if no googleCalendarEventId yet
-    if (!booking.googleCalendarEventId) {
-      await removeDuplicateBookings(booking, unit);
-    }
-
-    const googleEventId = booking.googleCalendarEventId;
-
-    if (googleEventId) {
-      await safeApiCall(() =>
-        calendar.events.update({
-          calendarId: process.env.GOOGLE_CALENDAR_ID!,
-          eventId: googleEventId,
-          requestBody: eventBody,
-        })
-      );
+    if (booking.googleCalendarEventId) {
+      // Try updating existing event
+      await calendar.events.update({
+        calendarId: process.env.GOOGLE_CALENDAR_ID!,
+        eventId: booking.googleCalendarEventId,
+        requestBody: event,
+      });
       console.log(`✅ Updated booking ${booking.id}`);
     } else {
-      const inserted = await safeApiCall(() =>
-        calendar.events.insert({
-          calendarId: process.env.GOOGLE_CALENDAR_ID!,
-          requestBody: eventBody,
-        })
-      );
-      booking.googleCalendarEventId = inserted.data.id;
+      // Insert new event
+      const inserted = await calendar.events.insert({
+        calendarId: process.env.GOOGLE_CALENDAR_ID!,
+        requestBody: event,
+      });
       console.log(`➕ Inserted booking ${booking.id}`);
-    }
 
+      // Save the generated Google Calendar event ID back to your booking
+      booking.googleCalendarEventId = inserted.data.id;
+      // If using Firestore, save it:
+      // await db.collection('bookings').doc(booking.id).update({ googleCalendarEventId: inserted.data.id });
+    }
   } catch (err: any) {
     console.error(`❌ Failed to sync booking ${booking.id}`, err);
   }
@@ -169,16 +80,14 @@ export async function deleteBookingFromCalendar(bookingId: string, googleEventId
   }
 
   try {
-    await safeApiCall(() =>
-      calendar.events.delete({
-        calendarId: process.env.GOOGLE_CALENDAR_ID!,
-        eventId: googleEventId,
-      })
-    );
+    await calendar.events.delete({
+      calendarId: process.env.GOOGLE_CALENDAR_ID!,
+      eventId: googleEventId,
+    });
     console.log(`🗑️ Deleted booking ${bookingId}`);
   } catch (err: any) {
-    if (err.code === 404 || err.code === 410) {
-      console.log(`⚠️ Booking ${bookingId} not found or already deleted`);
+    if (err.code === 404) {
+      console.log(`⚠️ Booking ${bookingId} not found in Google Calendar`);
     } else {
       console.error(`❌ Failed to delete booking ${bookingId}`, err);
     }
