@@ -1,5 +1,5 @@
 import { db } from '../lib/firebase';
-import calendar, { upsertBookingToCalendar, deleteBookingFromCalendar } from './google-calendar';
+import calendar, { upsertBookingToCalendar, deleteBookingFromCalendar } from '../lib/google-calendar';
 
 /**
  * Fetch all units from Firestore
