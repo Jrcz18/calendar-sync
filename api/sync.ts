@@ -38,8 +38,8 @@ export default async function syncBookings() {
 
     for (const booking of bookings) {
       try {
-        // Let Google Calendar generate an ID instead of using Firestore ID
-        await upsertBookingToCalendar({ ...booking, id: undefined }, unit);
+        // ✅ Keep Firestore doc.id as the booking.id
+        await upsertBookingToCalendar(booking, unit);
       } catch (err: any) {
         console.error(`❌ Error syncing booking ${booking.id}`, err.message || err);
       }
