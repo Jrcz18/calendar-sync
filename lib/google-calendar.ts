@@ -17,7 +17,8 @@ const jwtClient = new google.auth.JWT(
 const calendar = google.calendar({ version: 'v3', auth: jwtClient });
 
 export async function upsertBookingToCalendar(booking: any, unit: any) {
-  const bookingId = booking.id || '(no-id)';
+  // Always pick a usable ID (stored id OR Firestore doc id from sync loop)
+  const bookingId = booking.id || booking.bookingId || '(no-id)';
 
   if (!booking.checkinDate || !booking.checkoutDate) {
     console.error(`❌ Booking ${bookingId} missing checkinDate or checkoutDate`, booking);
@@ -40,11 +41,11 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
         summary: `Booking: ${unit.name}`,
         description: `Booked by ${firstName} ${lastName}`.trim(),
         start: { date: day },
-        end: { date: day }, // same-day all-day block
+        end: { date: day }, // all-day block for that night
         colorId: unit.colorId || '1',
       };
 
-      // Check if event already exists for this exact day
+      // Look for an event on that exact day
       const existingEvents = await calendar.events.list({
         calendarId: process.env.GOOGLE_CALENDAR_ID!,
         timeMin: new Date(current).toISOString(),
@@ -67,7 +68,7 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
         console.log(`➕ Inserted booking ${bookingId} for ${day}`);
       }
 
-      current.setDate(current.getDate() + 1); // move to next night
+      current.setDate(current.getDate() + 1); // next night
     }
 
   } catch (err: any) {
