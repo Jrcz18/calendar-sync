@@ -47,16 +47,17 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
       });
       console.log(`✅ Updated booking ${booking.id}`);
     } else {
-      // Check if an event already exists for this booking (avoid duplicates)
+      // List events for the full booking range
       const existingEvents = await calendar.events.list({
         calendarId: process.env.GOOGLE_CALENDAR_ID!,
         timeMin: startDate.toISOString(),
         timeMax: new Date(booking.checkoutDate).toISOString(),
-        q: `Booking: ${unit.name}`,
       });
 
-      // Check for an exact match on start and end date
+      // Match on summary, description, and exact dates
       const match = existingEvents.data.items?.find(ev =>
+        ev.summary === `Booking: ${unit.name}` &&
+        ev.description === `Booked by ${firstName} ${lastName}`.trim() &&
         ev.start?.date === startDate.toISOString().split('T')[0] &&
         ev.end?.date === endDate.toISOString().split('T')[0]
       );
