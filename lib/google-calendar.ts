@@ -17,7 +17,7 @@ const jwtClient = new google.auth.JWT(
 const calendar = google.calendar({ version: 'v3', auth: jwtClient });
 
 /**
- * Upsert booking → only creates missing events, skips existing, deletes duplicates
+ * Upsert booking → creates new, updates changed, skips identical, deletes duplicates
  */
 export async function upsertBookingToCalendar(booking: any, unit: any) {
   const bookingId = booking.id; // 🔑 use Firestore doc.id only
@@ -65,9 +65,27 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
       const matches = existingEvents.data.items || [];
 
       if (matches.length > 0) {
-        console.log(`⏭️ Skipped booking ${bookingId} (already exists for ${day})`);
+        const event = matches[0];
 
-        // Delete duplicates if more than one
+        // ✅ Update if details changed
+        const needsUpdate =
+          event.summary !== eventBody.summary ||
+          event.description !== eventBody.description ||
+          event.start?.date !== eventBody.start.date ||
+          event.end?.date !== eventBody.end.date;
+
+        if (needsUpdate && event.id) {
+          await calendar.events.update({
+            calendarId: process.env.GOOGLE_CALENDAR_ID!,
+            eventId: event.id,
+            requestBody: eventBody,
+          });
+          console.log(`🔄 Updated booking ${bookingId} for ${day}`);
+        } else {
+          console.log(`⏭️ Skipped booking ${bookingId} (no changes)`);
+        }
+
+        // 🗑️ Delete duplicates if more than one
         if (matches.length > 1) {
           for (let i = 1; i < matches.length; i++) {
             const duplicate = matches[i];
@@ -81,7 +99,7 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
           }
         }
       } else {
-        // No event → insert
+        // ➕ Insert new
         await calendar.events.insert({
           calendarId: process.env.GOOGLE_CALENDAR_ID!,
           requestBody: eventBody,
@@ -89,7 +107,7 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
         console.log(`➕ Inserted booking ${bookingId} for ${day}`);
       }
 
-      current.setDate(current.getDate() + 1); // move to next night
+      current.setDate(current.getDate() + 1); // move to next day
     }
   } catch (err: any) {
     console.error(`❌ Failed to sync booking ${bookingId}`, err);
@@ -127,3 +145,5 @@ export async function deleteBookingFromCalendar(bookingId: string) {
     console.error(`❌ Failed to delete events for booking ${bookingId}`, err);
   }
 }
+
+export default calendar;
