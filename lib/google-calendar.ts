@@ -20,7 +20,7 @@ const calendar = google.calendar({ version: 'v3', auth: jwtClient });
  * Upsert booking → creates new, updates changed, skips identical, deletes duplicates
  */
 export async function upsertBookingToCalendar(booking: any, unit: any) {
-  const bookingId = booking.id; // 🔑 use Firestore doc.id only
+  const bookingId = booking.id; // 🔑 Firestore doc.id only
   if (!bookingId) {
     console.error("❌ Skipping booking with no ID:", booking);
     return;
@@ -37,10 +37,14 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
   const checkin = new Date(booking.checkinDate);
   const checkout = new Date(booking.checkoutDate);
 
+  // ✅ Only block until checkout - 1 day
+  const lastNight = new Date(checkout);
+  lastNight.setDate(lastNight.getDate() - 1);
+
   try {
     let current = new Date(checkin);
 
-    while (current < checkout) {
+    while (current <= lastNight) {
       const day = current.toISOString().split('T')[0];
 
       const eventBody = {
@@ -54,15 +58,16 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
         },
       };
 
-      // Look for existing events tied to this bookingId
+      // 🔎 Look for ALL events with this bookingId
       const existingEvents = await calendar.events.list({
         calendarId: process.env.GOOGLE_CALENDAR_ID!,
         privateExtendedProperty: `bookingId=${bookingId}`,
-        timeMin: new Date(current).toISOString(),
-        timeMax: new Date(new Date(current).setDate(current.getDate() + 1)).toISOString(),
       });
 
-      const matches = existingEvents.data.items || [];
+      // ✅ Filter to this exact day
+      const matches = existingEvents.data.items?.filter(
+        ev => ev.start?.date === day && ev.end?.date === day
+      ) || [];
 
       if (matches.length > 0) {
         const event = matches[0];
@@ -85,7 +90,7 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
           console.log(`⏭️ Skipped booking ${bookingId} (no changes)`);
         }
 
-        // 🗑️ Delete duplicates if more than one
+        // 🗑️ Delete duplicates beyond the first
         if (matches.length > 1) {
           for (let i = 1; i < matches.length; i++) {
             const duplicate = matches[i];
@@ -107,7 +112,7 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
         console.log(`➕ Inserted booking ${bookingId} for ${day}`);
       }
 
-      current.setDate(current.getDate() + 1); // move to next day
+      current.setDate(current.getDate() + 1); // next night
     }
   } catch (err: any) {
     console.error(`❌ Failed to sync booking ${bookingId}`, err);
