@@ -17,17 +17,17 @@ const jwtClient = new google.auth.JWT(
 const calendar = google.calendar({ version: 'v3', auth: jwtClient });
 
 export async function upsertBookingToCalendar(booking: any, unit: any) {
-  if (!booking.checkinDate) {
-    console.error(`❌ Booking ${booking.id} missing checkinDate`, booking);
+  if (!booking.checkinDate || !booking.checkoutDate) {
+    console.error(`❌ Booking ${booking.id} missing checkinDate or checkoutDate`, booking);
     return;
   }
 
   const firstName = booking.guestFirstName?.trim() || '';
   const lastName = booking.guestLastName?.trim() || '';
 
-const startDate = new Date(booking.checkinDate);
-const endDate = new Date(booking.checkoutDate);
-endDate.setDate(endDate.getDate() - 1); // blocking ends on checkoutDate - 1
+  const startDate = new Date(booking.checkinDate);
+  const endDate = new Date(booking.checkoutDate);
+  endDate.setDate(endDate.getDate() - 1); // blocking ends on checkoutDate - 1
 
   const eventBody = {
     summary: `Booking: ${unit.name}`,
@@ -51,16 +51,20 @@ endDate.setDate(endDate.getDate() - 1); // blocking ends on checkoutDate - 1
       const existingEvents = await calendar.events.list({
         calendarId: process.env.GOOGLE_CALENDAR_ID!,
         timeMin: startDate.toISOString(),
-        timeMax: endDate.toISOString(),
-        q: `Booking: ${unit.name}`, // search by summary
+        timeMax: new Date(booking.checkoutDate).toISOString(),
+        q: `Booking: ${unit.name}`,
       });
 
-      if (existingEvents.data.items?.length) {
-        // Attach the first matching event's ID to booking to prevent re-adding
-        booking.googleCalendarEventId = existingEvents.data.items[0].id;
+      // Check for an exact match on start and end date
+      const match = existingEvents.data.items?.find(ev =>
+        ev.start?.date === startDate.toISOString().split('T')[0] &&
+        ev.end?.date === endDate.toISOString().split('T')[0]
+      );
+
+      if (match) {
+        booking.googleCalendarEventId = match.id;
         console.log(`⚠️ Booking ${booking.id} already exists in calendar. Using existing event.`);
       } else {
-        // Insert new event
         const inserted = await calendar.events.insert({
           calendarId: process.env.GOOGLE_CALENDAR_ID!,
           requestBody: eventBody,
