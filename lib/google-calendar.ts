@@ -16,9 +16,11 @@ const jwtClient = new google.auth.JWT(
 
 const calendar = google.calendar({ version: 'v3', auth: jwtClient });
 
+/**
+ * Upsert booking → only creates missing events, skips existing, deletes duplicates
+ */
 export async function upsertBookingToCalendar(booking: any, unit: any) {
-  // Require an ID
-  const bookingId = booking.id || booking.bookingId;
+  const bookingId = booking.id; // 🔑 use Firestore doc.id only
   if (!bookingId) {
     console.error("❌ Skipping booking with no ID:", booking);
     return;
@@ -43,29 +45,29 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
 
       const eventBody = {
         summary: `Booking: ${unit.name}`,
-        description: `Booked by ${firstName} ${lastName}`.trim(),
+        description: `Booking ID: ${bookingId}\nBooked by ${firstName} ${lastName}`.trim(),
         start: { date: day },
-        end: { date: day }, // all-day block for that night
+        end: { date: day }, // all-day block
         colorId: unit.colorId || '1',
+        extendedProperties: {
+          private: { bookingId }, // 🔑 store Firestore ID in event
+        },
       };
 
-      // Look for all events on that exact day
+      // Look for existing events tied to this bookingId
       const existingEvents = await calendar.events.list({
         calendarId: process.env.GOOGLE_CALENDAR_ID!,
+        privateExtendedProperty: `bookingId=${bookingId}`,
         timeMin: new Date(current).toISOString(),
         timeMax: new Date(new Date(current).setDate(current.getDate() + 1)).toISOString(),
       });
 
-      const matches = existingEvents.data.items?.filter(ev =>
-        ev.summary === `Booking: ${unit.name}` &&
-        ev.start?.date === day &&
-        ev.end?.date === day
-      ) || [];
+      const matches = existingEvents.data.items || [];
 
       if (matches.length > 0) {
-        console.log(`⚠️ Booking ${bookingId} already exists in calendar for ${day}`);
+        console.log(`⏭️ Skipped booking ${bookingId} (already exists for ${day})`);
 
-        // Delete duplicates if more than one exists
+        // Delete duplicates if more than one
         if (matches.length > 1) {
           for (let i = 1; i < matches.length; i++) {
             const duplicate = matches[i];
@@ -79,6 +81,7 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
           }
         }
       } else {
+        // No event → insert
         await calendar.events.insert({
           calendarId: process.env.GOOGLE_CALENDAR_ID!,
           requestBody: eventBody,
@@ -86,9 +89,41 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
         console.log(`➕ Inserted booking ${bookingId} for ${day}`);
       }
 
-      current.setDate(current.getDate() + 1); // next night
+      current.setDate(current.getDate() + 1); // move to next night
     }
   } catch (err: any) {
     console.error(`❌ Failed to sync booking ${bookingId}`, err);
+  }
+}
+
+/**
+ * Delete all calendar events for a booking
+ */
+export async function deleteBookingFromCalendar(bookingId: string) {
+  if (!bookingId) return;
+
+  try {
+    const existingEvents = await calendar.events.list({
+      calendarId: process.env.GOOGLE_CALENDAR_ID!,
+      privateExtendedProperty: `bookingId=${bookingId}`,
+    });
+
+    const matches = existingEvents.data.items || [];
+
+    for (const ev of matches) {
+      if (ev.id) {
+        await calendar.events.delete({
+          calendarId: process.env.GOOGLE_CALENDAR_ID!,
+          eventId: ev.id,
+        });
+        console.log(`🗑️ Deleted event ${ev.id} for booking ${bookingId}`);
+      }
+    }
+
+    if (matches.length === 0) {
+      console.log(`⚠️ No events found for booking ${bookingId}`);
+    }
+  } catch (err: any) {
+    console.error(`❌ Failed to delete events for booking ${bookingId}`, err);
   }
 }
