@@ -17,67 +17,60 @@ const jwtClient = new google.auth.JWT(
 const calendar = google.calendar({ version: 'v3', auth: jwtClient });
 
 export async function upsertBookingToCalendar(booking: any, unit: any) {
+  const bookingId = booking.id || '(no-id)';
+
   if (!booking.checkinDate || !booking.checkoutDate) {
-    console.error(`❌ Booking ${booking.id} missing checkinDate or checkoutDate`, booking);
+    console.error(`❌ Booking ${bookingId} missing checkinDate or checkoutDate`, booking);
     return;
   }
 
   const firstName = booking.guestFirstName?.trim() || '';
   const lastName = booking.guestLastName?.trim() || '';
 
-  const startDate = new Date(booking.checkinDate);
-  const endDate = new Date(booking.checkoutDate);
-  endDate.setDate(endDate.getDate() - 1); // blocking ends on checkoutDate - 1
-
-  const eventBody = {
-    summary: `Booking: ${unit.name}`,
-    description: `Booked by ${firstName} ${lastName}`.trim(),
-    start: { date: startDate.toISOString().split('T')[0] },
-    end: { date: endDate.toISOString().split('T')[0] },
-    colorId: unit.colorId || '1',
-  };
+  const checkin = new Date(booking.checkinDate);
+  const checkout = new Date(booking.checkoutDate);
 
   try {
-    if (booking.googleCalendarEventId) {
-      // Update existing event
-      await calendar.events.update({
-        calendarId: process.env.GOOGLE_CALENDAR_ID!,
-        eventId: booking.googleCalendarEventId,
-        requestBody: eventBody,
-      });
-      console.log(`✅ Updated booking ${booking.id}`);
-    } else {
-      // List events for the full booking range
+    let current = new Date(checkin);
+
+    while (current < checkout) {
+      const day = current.toISOString().split('T')[0];
+
+      const eventBody = {
+        summary: `Booking: ${unit.name}`,
+        description: `Booked by ${firstName} ${lastName}`.trim(),
+        start: { date: day },
+        end: { date: day }, // same-day all-day block
+        colorId: unit.colorId || '1',
+      };
+
+      // Check if event already exists for this exact day
       const existingEvents = await calendar.events.list({
         calendarId: process.env.GOOGLE_CALENDAR_ID!,
-        timeMin: startDate.toISOString(),
-        timeMax: new Date(booking.checkoutDate).toISOString(),
+        timeMin: new Date(current).toISOString(),
+        timeMax: new Date(new Date(current).setDate(current.getDate() + 1)).toISOString(),
       });
 
-      // Match on summary, description, and exact dates
       const match = existingEvents.data.items?.find(ev =>
         ev.summary === `Booking: ${unit.name}` &&
-        ev.description === `Booked by ${firstName} ${lastName}`.trim() &&
-        ev.start?.date === startDate.toISOString().split('T')[0] &&
-        ev.end?.date === endDate.toISOString().split('T')[0]
+        ev.start?.date === day &&
+        ev.end?.date === day
       );
 
       if (match) {
-        booking.googleCalendarEventId = match.id;
-        console.log(`⚠️ Booking ${booking.id} already exists in calendar. Using existing event.`);
+        console.log(`⚠️ Booking ${bookingId} already exists in calendar for ${day}`);
       } else {
-        const inserted = await calendar.events.insert({
+        await calendar.events.insert({
           calendarId: process.env.GOOGLE_CALENDAR_ID!,
           requestBody: eventBody,
         });
-        booking.googleCalendarEventId = inserted.data.id;
-        console.log(`➕ Inserted booking ${booking.id}`);
+        console.log(`➕ Inserted booking ${bookingId} for ${day}`);
       }
 
-      // Optionally, save the googleCalendarEventId to Firestore:
-      // await db.collection('bookings').doc(booking.id).update({ googleCalendarEventId: booking.googleCalendarEventId });
+      current.setDate(current.getDate() + 1); // move to next night
     }
+
   } catch (err: any) {
-    console.error(`❌ Failed to sync booking ${booking.id}`, err);
+    console.error(`❌ Failed to sync booking ${bookingId}`, err);
   }
 }
