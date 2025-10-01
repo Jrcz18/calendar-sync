@@ -25,9 +25,9 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
   const firstName = booking.guestFirstName?.trim() || '';
   const lastName = booking.guestLastName?.trim() || '';
 
-  const startDate = new Date(booking.checkinDate);
-  const endDate = new Date(startDate);
-  endDate.setDate(endDate.getDate() + 1);
+const startDate = new Date(booking.checkinDate);
+const endDate = new Date(booking.checkoutDate);
+endDate.setDate(endDate.getDate() - 1); // blocking ends on checkoutDate - 1
 
   const eventBody = {
     summary: `Booking: ${unit.name}`,
