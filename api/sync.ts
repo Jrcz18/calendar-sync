@@ -23,8 +23,7 @@ async function fetchBookingsForUnit(unitId: string) {
 
 /**
  * Sync all bookings to Google Calendar
- * - Creates new events
- * - Updates changed ones
+ * - Creates/updates events
  * - Skips identical ones
  * - Deletes duplicates automatically (via upsertBookingToCalendar)
  * - Removes events if booking is missing from Firestore
@@ -56,7 +55,6 @@ export default async function syncBookings() {
     try {
       const existingEvents = await calendar.events.list({
         calendarId: process.env.GOOGLE_CALENDAR_ID!,
-        // we stored bookingId in extendedProperties.private
       });
 
       const items = existingEvents.data.items || [];
@@ -66,25 +64,6 @@ export default async function syncBookings() {
         if (bookingId && !bookingIds.includes(bookingId)) {
           await deleteBookingFromCalendar(bookingId);
           console.log(`🗑️ Removed stale event for deleted booking ${bookingId}`);
-        }
-      }
-
-      // 🔁 Extra safeguard: delete duplicates globally by bookingId+day
-      const seen = new Map<string, string>(); // key = bookingId|day → eventId
-      for (const ev of items) {
-        const bookingId = ev.extendedProperties?.private?.bookingId;
-        const day = ev.start?.date;
-        if (!bookingId || !day) continue;
-
-        const key = `${bookingId}|${day}`;
-        if (!seen.has(key)) {
-          seen.set(key, ev.id || '');
-        } else if (ev.id) {
-          await calendar.events.delete({
-            calendarId: process.env.GOOGLE_CALENDAR_ID!,
-            eventId: ev.id,
-          });
-          console.log(`🗑️ Deleted global duplicate for booking ${bookingId} on ${day}`);
         }
       }
     } catch (err: any) {
