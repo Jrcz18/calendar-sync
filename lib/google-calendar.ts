@@ -3,7 +3,7 @@ import { google } from 'googleapis';
 // Initialize Google Calendar client
 const serviceAccount = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT || '{}');
 
-if (!serviceAccount || !serviceAccount.client_email || !serviceAccount.private_key) {
+if (!serviceAccount?.client_email || !serviceAccount?.private_key) {
   throw new Error('GOOGLE_SERVICE_ACCOUNT env is missing or invalid');
 }
 
@@ -17,8 +17,12 @@ const jwtClient = new google.auth.JWT(
 const calendar = google.calendar({ version: 'v3', auth: jwtClient });
 
 export async function upsertBookingToCalendar(booking: any, unit: any) {
-  // Always pick a usable ID (stored id OR Firestore doc id from sync loop)
-  const bookingId = booking.id || booking.bookingId || '(no-id)';
+  // Require an ID
+  const bookingId = booking.id || booking.bookingId;
+  if (!bookingId) {
+    console.error("❌ Skipping booking with no ID:", booking);
+    return;
+  }
 
   if (!booking.checkinDate || !booking.checkoutDate) {
     console.error(`❌ Booking ${bookingId} missing checkinDate or checkoutDate`, booking);
@@ -45,21 +49,35 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
         colorId: unit.colorId || '1',
       };
 
-      // Look for an event on that exact day
+      // Look for all events on that exact day
       const existingEvents = await calendar.events.list({
         calendarId: process.env.GOOGLE_CALENDAR_ID!,
         timeMin: new Date(current).toISOString(),
         timeMax: new Date(new Date(current).setDate(current.getDate() + 1)).toISOString(),
       });
 
-      const match = existingEvents.data.items?.find(ev =>
+      const matches = existingEvents.data.items?.filter(ev =>
         ev.summary === `Booking: ${unit.name}` &&
         ev.start?.date === day &&
         ev.end?.date === day
-      );
+      ) || [];
 
-      if (match) {
+      if (matches.length > 0) {
         console.log(`⚠️ Booking ${bookingId} already exists in calendar for ${day}`);
+
+        // Delete duplicates if more than one exists
+        if (matches.length > 1) {
+          for (let i = 1; i < matches.length; i++) {
+            const duplicate = matches[i];
+            if (duplicate.id) {
+              await calendar.events.delete({
+                calendarId: process.env.GOOGLE_CALENDAR_ID!,
+                eventId: duplicate.id,
+              });
+              console.log(`🗑️ Deleted duplicate event for ${bookingId} on ${day}`);
+            }
+          }
+        }
       } else {
         await calendar.events.insert({
           calendarId: process.env.GOOGLE_CALENDAR_ID!,
@@ -70,7 +88,6 @@ export async function upsertBookingToCalendar(booking: any, unit: any) {
 
       current.setDate(current.getDate() + 1); // next night
     }
-
   } catch (err: any) {
     console.error(`❌ Failed to sync booking ${bookingId}`, err);
   }
